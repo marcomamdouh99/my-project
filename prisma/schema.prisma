@@ -1,0 +1,382 @@
+// Franchise POS System - Central Database Schema
+// This schema supports a SaaS multi-branch coffee shop franchise with centralized control
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER MANAGEMENT & AUTHENTICATION
+// ============================================
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  email        String   @unique
+  passwordHash String
+  name         String?
+  role         UserRole  @default(CASHIER)
+  branchId     String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  branch          Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  orders          Order[]
+  inventoryTxns   InventoryTransaction[]
+  auditLogs       AuditLog[]
+  modifiedInventories BranchInventory[]  @relation("InventoryModifier")
+  shifts          Shift[]
+
+  @@index([username])
+  @@index([branchId])
+}
+
+enum UserRole {
+  ADMIN        // HQ Admin - Full control
+  BRANCH_MANAGER
+  CASHIER
+}
+
+// ============================================
+// BRANCH MANAGEMENT & LICENSING
+// ============================================
+
+model Branch {
+  id               String   @id @default(cuid())
+  branchName       String   @unique
+  licenseKey       String   @unique
+  licenseExpiresAt DateTime
+  isActive         Boolean  @default(true)
+  lastSyncAt       DateTime?
+  menuVersion      Int      @default(1)
+  pricingVersion   Int      @default(1)
+  recipeVersion    Int      @default(1)
+  ingredientVersion Int     @default(1)
+  userVersion      Int      @default(1)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  serialYear      Int      @default(2024)
+  lastSerial      Int      @default(0)
+
+  users             User[]
+  branchInventory   BranchInventory[]
+  orders            Order[]
+  inventoryTxns     InventoryTransaction[]
+  syncHistory       SyncHistory[]
+  syncConflicts     SyncConflict[]
+  shifts            Shift[]
+
+  @@index([licenseKey])
+  @@index([isActive])
+}
+
+model BranchLicense {
+  id             String   @id @default(cuid())
+  branchId       String
+  licenseKey     String   @unique
+  activationDate DateTime @default(now())
+  expirationDate DateTime
+  maxDevices     Int      @default(1)
+  isRevoked      Boolean  @default(false)
+  revokedReason  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([branchId])
+  @@index([licenseKey])
+}
+
+// ============================================
+// MENU & PRICING (CENTRAL CONTROL)
+// ============================================
+
+model MenuItem {
+  id          String   @id @default(cuid())
+  name        String
+  category    String
+  price       Float
+  taxRate     Float    @default(0.14)
+  isActive    Boolean  @default(true)
+  imagePath   String?
+  sortOrder   Int?
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  recipes  Recipe[]
+  orderItems OrderItem[]
+
+  @@index([category])
+  @@index([isActive])
+  @@index([version])
+}
+
+model Recipe {
+  id               String   @id @default(cuid())
+  menuItemId       String
+  ingredientId     String
+  quantityRequired Float
+  unit             String
+  version          Int      @default(1)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  menuItem    MenuItem    @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  ingredient Ingredient  @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, ingredientId])
+  @@index([menuItemId])
+  @@index([version])
+}
+
+model Ingredient {
+  id               String            @id @default(cuid())
+  name             String            @unique
+  unit             String            // 'kg', 'L', 'unit', 'g', 'ml'
+  costPerUnit      Float
+  reorderThreshold Float
+  version          Int               @default(1)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  recipes         Recipe[]
+  branchInventory BranchInventory[]
+  inventoryTxns   InventoryTransaction[]
+
+  @@index([name])
+  @@index([version])
+}
+
+// ============================================
+// INVENTORY MANAGEMENT
+// ============================================
+
+model BranchInventory {
+  id              String   @id @default(cuid())
+  branchId        String
+  ingredientId    String
+  currentStock    Float    @default(0)
+  lastRestockAt   DateTime?
+  lastModifiedAt  DateTime @default(now())
+  lastModifiedBy  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  modifier   User?       @relation("InventoryModifier", fields: [lastModifiedBy], references: [id])
+
+  @@unique([branchId, ingredientId])
+  @@index([branchId])
+  @@index([ingredientId])
+}
+
+model InventoryTransaction {
+  id             String               @id @default(cuid())
+  branchId       String
+  ingredientId   String
+  transactionType InventoryTxnType
+  quantityChange Float
+  stockBefore    Float
+  stockAfter     Float
+  orderId        String?
+  reason         String?
+  createdBy      String
+  createdAt      DateTime             @default(now())
+
+  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  order      Order?     @relation(fields: [orderId], references: [id])
+  creator    User       @relation(fields: [createdBy], references: [id])
+
+  @@index([branchId])
+  @@index([ingredientId])
+  @@index([orderId])
+  @@index([createdAt])
+}
+
+enum InventoryTxnType {
+  SALE
+  WASTE
+  REFUND
+  ADJUSTMENT
+  RESTOCK
+}
+
+// ============================================
+// ORDERS & SALES
+// ============================================
+
+model InvoiceSerial {
+  id             String   @id @default(cuid())
+  branchId       String
+  year           Int
+  lastSerial     Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([branchId, year])
+  @@index([branchId, year])
+}
+
+model Order {
+  id               String   @id @default(cuid())
+  branchId         String
+  orderNumber      Int
+  orderTimestamp   DateTime @default(now())
+  cashierId        String
+  subtotal         Float
+  totalAmount      Float
+  paymentMethod    String
+  isRefunded       Boolean  @default(false)
+  refundReason     String?
+  transactionHash  String   @unique
+  synced           Boolean  @default(false)
+  shiftId          String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  branch   Branch      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  cashier  User        @relation(fields: [cashierId], references: [id])
+  shift    Shift?      @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  items    OrderItem[]
+  inventoryTxns InventoryTransaction[]
+
+  @@unique([branchId, orderNumber])
+  @@index([branchId])
+  @@index([orderTimestamp])
+  @@index([synced])
+  @@index([transactionHash])
+  @@index([shiftId])
+}
+
+model OrderItem {
+  id            String   @id @default(cuid())
+  orderId       String
+  menuItemId    String
+  itemName      String
+  quantity      Int
+  unitPrice     Float
+  subtotal      Float
+  recipeVersion Int
+  createdAt     DateTime @default(now())
+
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([menuItemId])
+}
+
+// ============================================
+// SYNC & AUDIT
+// ============================================
+
+model SyncHistory {
+  id             String        @id @default(cuid())
+  branchId       String
+  syncDirection  SyncDirection
+  recordsAffected Int
+  syncStartedAt  DateTime      @default(now())
+  syncCompletedAt DateTime?
+  status         SyncStatus
+  errorDetails   String?
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([branchId])
+  @@index([syncStartedAt])
+}
+
+enum SyncDirection {
+  UP     // Branch → Central
+  DOWN   // Central → Branch
+}
+
+enum SyncStatus {
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
+model SyncConflict {
+  id             String   @id @default(cuid())
+  branchId       String
+  entityType     String
+  entityId       String
+  conflictReason String
+  branchPayload  String?
+  centralPayload String?
+  detectedAt     DateTime @default(now())
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  resolution     ConflictResolution?
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([branchId])
+  @@index([detectedAt])
+}
+
+enum ConflictResolution {
+  ACCEPT_BRANCH
+  ACCEPT_CENTRAL
+  MANUAL_MERGE
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  timestamp    DateTime @default(now())
+  userId       String
+  actionType   String   // 'sale', 'refund', 'inventory_adjust', 'login', 'menu_sync'
+  entityType   String?
+  entityId     String?
+  oldValue     String?
+  newValue     String?
+  ipAddress    String?
+  previousHash String?
+  currentHash  String
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([timestamp])
+  @@index([actionType])
+}
+
+// ============================================
+// SHIFT MANAGEMENT
+// ============================================
+
+model Shift {
+  id              String   @id @default(cuid())
+  branchId        String
+  cashierId       String
+  startTime       DateTime @default(now())
+  endTime         DateTime?
+  openingCash      Float    @default(0)
+  closingCash      Float?
+  openingOrders    Int      @default(0)
+  closingOrders    Int?
+  openingRevenue   Float    @default(0)
+  closingRevenue   Float?
+  isClosed         Boolean  @default(false)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  branch  Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  cashier User    @relation(fields: [cashierId], references: [id])
+  orders   Order[]
+
+  @@index([branchId])
+  @@index([cashierId])
+  @@index([startTime])
+  @@index([isClosed])
+}

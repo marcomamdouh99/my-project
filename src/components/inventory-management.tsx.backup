@@ -1,0 +1,449 @@
+'use client';
+/^export default/i
+
+import { useState, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
+import { Trash2, Package, TrendingUp, History, AlertCircle } from 'lucide-react';
+import { useI18n } from '@/lib/i18n-context';
+import { formatCurrency } from '@/lib/utils';
+
+interface InventoryAlert {
+  ingredientId: string;
+  ingredientName: string;
+  currentStock: number;
+  unit: string;
+  reorderThreshold: number;
+  deficit: number;
+  urgency: 'CRITICAL' | 'WARNING';
+}
+
+interface WasteTransaction {
+  ingredientName: string;
+  quantity: number;
+  unit: string;
+  reason: string;
+  timestamp: string;
+  userName: string;
+}
+
+export default function InventoryManagement() {
+  const [user, setUser] = useState<any>(null);
+  const [selectedBranch, setSelectedBranch] = useState<string>('');
+  const [alerts, setAlerts] = useState<InventoryAlert[]>([]);
+  const [wasteTransactions, setWasteTransactions] = useState<WasteTransaction[]>([]);
+  const [wasteAmount, setWasteAmount] = useState('');
+  const [wasteReason, setWasteReason] = useState('');
+  const [restockAmount, setRestockAmount] = useState('');
+  const [restockIngredient, setRestockIngredient] = useState('');
+  const [restockSupplier, setRestockSupplier] = useState('');
+  const [ingredients, setIngredients] = useState<any[]>([]);
+  const { language, currency, t } = useI18n();
+
+  const branches = [
+    { id: 'cml46do4q0000ob5g27krklqe', name: t('branch.downtown') },
+    { id: 'cml46do4s0001ob5gs267tqmu', name: t('branch.airport') },
+  ];
+
+  // Load user on mount
+  useEffect(() => {
+    const userStr = localStorage.getItem('user');
+    if (userStr) {
+      const userData = JSON.parse(userStr);
+      setUser(userData);
+      if (userData.role === 'ADMIN' && branches.length > 0) {
+        setSelectedBranch(branches[0].id);
+      }
+    }
+  }, []);
+
+  // Fetch alerts and waste transactions when branch is selected
+  useEffect(() => {
+    const fetchData = async () => {
+      const branchId = user?.role === 'ADMIN' ? selectedBranch : user?.branchId;
+
+      if (!branchId) {
+        setAlerts([]);
+        setWasteTransactions([]);
+        setIngredients([]);
+        return;
+      }
+
+      try {
+        // Fetch low stock alerts
+        const alertsResponse = await fetch(`/api/inventory/low-stock?branchId=${branchId}`);
+        const alertsData = await alertsResponse.json();
+
+        // Fetch waste transactions
+        const wasteResponse = await fetch(`/api/inventory/waste?branchId=${branchId}&limit=20`);
+        const wasteData = await wasteResponse.json();
+
+        // Fetch ingredients for dropdown
+        const ingredientsResponse = await fetch(`/api/ingredients?branchId=${branchId}`);
+        const ingredientsData = await ingredientsResponse.json();
+
+        if (alertsResponse.ok) {
+          setAlerts(alertsData.alerts || []);
+        }
+
+        if (wasteResponse.ok) {
+          setWasteTransactions(wasteData.wasteTransactions || []);
+        }
+
+        if (ingredientsResponse.ok) {
+          setIngredients(ingredientsData.ingredients || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch inventory data:', error);
+      }
+    };
+
+    fetchData();
+  }, [selectedBranch, user?.branchId, user?.role]);
+
+  const handleRecordWaste = async () => {
+    const branchId = user?.role === 'ADMIN' ? selectedBranch : user?.branchId;
+
+    if (!branchId || !restockIngredient || !wasteAmount || !wasteReason) {
+      alert('Please fill in all fields');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/inventory/waste', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          branchId,
+          ingredientId: restockIngredient,
+          quantity: parseFloat(wasteAmount),
+          reason: wasteReason,
+          userId: user.id,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        alert(data.message);
+        setWasteAmount('');
+        setWasteReason('');
+        setRestockIngredient('');
+        
+        // Refresh waste transactions
+        const wasteResponse = await fetch(`/api/inventory/waste?branchId=${branchId}&limit=20`);
+        const wasteData = await wasteResponse.json();
+        if (wasteResponse.ok) {
+          setWasteTransactions(wasteData.wasteTransactions || []);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to record waste:', error);
+      alert('Failed to record waste');
+    }
+  };
+
+  const handleRestock = async () => {
+    const branchId = user?.role === 'ADMIN' ? selectedBranch : user?.branchId;
+
+    if (!branchId || !restockIngredient || !restockAmount) {
+      alert('Please fill in all required fields');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/inventory/restock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          branchId,
+          ingredientId: restockIngredient,
+          quantity: parseFloat(restockAmount),
+          cost: parseFloat(restockAmount) * 15, // Example cost calculation
+          supplier: restockSupplier || 'Manual restock',
+          userId: user.id,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        alert(data.message);
+        setRestockAmount('');
+        setRestockSupplier('');
+        setRestockIngredient('');
+        
+        // Refresh alerts
+        const alertsResponse = await fetch(`/api/inventory/low-stock?branchId=${branchId}`);
+        const alertsData = await alertsResponse.json();
+        if (alertsResponse.ok) {
+          setAlerts(alertsData.alerts || []);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to restock:', error);
+      alert('Failed to process restock');
+    }
+  };
+
+  if (user?.role !== 'ADMIN' && user?.role !== 'BRANCH_MANAGER') {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center justify-center py-12">
+          <AlertCircle className="h-12 w-12 text-slate-400 mb-4" />
+          <p className="text-slate-600 dark:text-slate-400 text-center max-w-md">
+            {t('access.denied')}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Low Stock Alerts */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 text-red-500" />
+            {t('reports.low.stock')}
+            <Badge variant="outline" className="ml-2">
+              {alerts.filter(a => a.urgency === 'CRITICAL').length}
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ScrollArea className="h-[400px] pr-4">
+            {alerts.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                <Package className="h-12 w-12 mb-2" />
+                <p>{t('reports.inventory.status')} OK</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {alerts.map((alert) => (
+                  <div key={alert.ingredientId} className="p-3 border rounded-lg">
+                    <div className={`${
+                      alert.urgency === 'CRITICAL' 
+                        ? 'bg-red-50 dark:bg-red-950 border-red-200 dark:border-red-800' 
+                        : 'bg-yellow-50 dark:bg-yellow-950 border-yellow-200 dark:border-yellow-800'
+                    }`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-medium">{alert.ingredientName}</span>
+                        <Badge variant={alert.urgency === 'CRITICAL' ? 'destructive' : 'outline'}>
+                          {alert.urgency}
+                        </Badge>
+                      </div>
+                      <div className="text-sm space-y-1">
+                        <div className="flex justify-between">
+                          <span className="text-slate-600 dark:text-slate-400">{t('reports.current.stock')}:</span>
+                          <span className="font-medium">{alert.currentStock} {alert.unit}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-600 dark:text-slate-400">{t('reports.reorder.level')}:</span>
+                          <span className="font-medium">{alert.reorderThreshold} {alert.unit}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-red-600 dark:text-red-400 font-medium">{t('reports.below.threshold')}:</span>
+                          <span className="font-bold text-red-600 dark:text-red-400">{alert.deficit} {alert.unit}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+        </CardContent>
+      </Card>
+
+      {/* Record Waste */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Trash2 className="h-5 w-5 text-orange-500" />
+            {t('inventory.waste')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Ingredient</label>
+              <Select 
+                value={restockIngredient} 
+                onValueChange={setRestockIngredient}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select ingredient" />
+                </SelectTrigger>
+                <SelectContent>
+                  {ingredients.map((ing) => (
+                    <SelectItem key={ing.id} value={ing.id}>
+                      {ing.name}
+                    </SelectItem>
+                  ))}
+</Select>
+                </Select>
+                <SelectContent>
+                </SelectContent>
+              </Select>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Quantity Lost</label>
+              <Input
+                type="number"
+                step="0.01"
+                value={wasteAmount}
+                onChange={(e) => setWasteAmount(e.target.value)}
+                placeholder="0.00"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Reason</label>
+              <Textarea
+                value={wasteReason}
+                onChange={(e) => setWasteReason(e.target.value)}
+                placeholder="e.g., Spilled, Expired, Broken..."
+                rows={3}
+              />
+            </div>
+            <Button 
+              onClick={handleRecordWaste}
+              className="w-full"
+              disabled={!restockIngredient || !wasteAmount || !wasteReason}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Record Waste
+            </Button>
+          </div>
+
+          <Separator />
+
+          {/* Recent Waste History */}
+          <div>
+            <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+              <History className="h-4 w-4" />
+              Recent Waste
+            </h4>
+            <ScrollArea className="h-[200px] pr-4">
+              {wasteTransactions.length === 0 ? (
+                <p className="text-sm text-slate-500">No waste recorded yet</p>
+              ) : (
+                <div className="space-y-2 text-sm">
+                  {wasteTransactions.map((waste) => (
+                    <div key={waste.timestamp} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-800 rounded">
+                      <div>
+                        <span className="font-medium">{waste.ingredientName}</span>
+                        <span className="text-slate-600 dark:text-slate-400">
+                          - {waste.quantity} {waste.unit}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-orange-600">{waste.reason}</span>
+                        <span className="text-xs text-slate-500 block">{new Date(waste.timestamp).toLocaleString()}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Restock */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Package className="h-5 w-5 text-green-500" />
+            {t('inventory.restock')}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Ingredient</label>
+              <Select 
+                value={restockIngredient} 
+                onValueChange={setRestockIngredient}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select ingredient" />
+                </SelectTrigger>
+                <SelectContent>
+                  {ingredients.map((ing) => (
+                    <SelectItem key={ing.id} value={ing.id}>
+                      {ing.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Quantity to Add</label>
+              <Input
+                type="number"
+                step="0.01"
+                value={restockAmount}
+                onChange={(e) => setRestockAmount(e.target.value)}
+                placeholder="0.00"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Supplier (Optional)</label>
+              <Input
+                value={restockSupplier}
+                onChange={(e) => setRestockSupplier(e.target.value)}
+                placeholder="e.g., Coffee Supplier Co."
+              />
+            </div>
+            <Button 
+              onClick={handleRestock}
+              className="w-full"
+              disabled={!restockIngredient || !restockAmount}
+            >
+              <TrendingUp className="h-4 w-4 mr-2" />
+              Restock Inventory
+            </Button>
+          </div>
+
+          {/* Branch Selector for Admin */}
+          {user?.role === 'ADMIN' && (
+            <>
+              <Separator />
+              <div className="space-y-2">
+                <label className="text-sm font-medium flex items-center gap-2">
+                  <span>{t('pos.process.sale')}</span>
+                </label>
+                <Select value={selectedBranch} onValueChange={setSelectedBranch}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder={t('pos.select.branch')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {branches.map((branch) => (
+                      <SelectItem key={branch.id} value={branch.id}>
+                        {branch.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            </>
+          )}
+
+          {user?.role !== 'ADMIN' && user?.branchId && (
+            <div className="text-sm text-slate-600 dark:text-slate-400">
+              <span className="font-medium">{t('pos.branch')}: </span>
+              {branches.find(b => b.id === user.branchId)?.name || user.branchId}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
