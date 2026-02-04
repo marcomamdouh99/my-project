@@ -237,7 +237,7 @@ export function ReceiptViewer({ open, onClose, order }: ReceiptViewerProps) {
                 </div>
 
                 <div className="items">
-                  {order.items.map((item) => (
+                  {order?.items && order.items.map((item) => (
                     <div key={item.id} className="item">
                       <span className="item-qty">{item.quantity}x</span>
                       <span className="item-name">{item.itemName}</span>

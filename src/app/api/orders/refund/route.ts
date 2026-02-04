@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
     } = body;
 
     // Validate request
-    if (!orderId || !reason || !userId) {
+    if (!orderId || !reason) {
       return NextResponse.json(
         { error: 'Missing required fields' },
         { status: 400 }

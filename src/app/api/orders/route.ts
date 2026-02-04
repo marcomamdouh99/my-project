@@ -232,13 +232,26 @@ export async function POST(request: NextRequest) {
       return newOrder;
     });
 
+    // Get branch for response
+    const branch = await db.branch.findUnique({
+      where: { id: branchId },
+    });
+
     return NextResponse.json({
       success: true,
       order: {
         id: order.id,
         orderNumber: order.orderNumber,
-        total: order.totalAmount,
+        totalAmount: order.totalAmount,
         transactionHash: order.transactionHash,
+        orderTimestamp: order.orderTimestamp.toISOString(),
+        cashierId: cashier.id,
+        paymentMethod: paymentMethod,
+        items: orderItemsToCreate,
+        branch: branch ? {
+          id: branch.id,
+          branchName: branch.branchName,
+        } : null,
       },
       message: 'Order processed successfully',
     });
